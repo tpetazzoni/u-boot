@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: GPL-2.0+
+/dts-v1/;
+/include/ "zynq-7000.dtsi"
+
+/ {
+	model = "Foo Bar";
+	compatible = "foo,bar", "xlnx,zynq-7000";
+
+	aliases {
+		serial1 = &uart1;
+	};
+
+	memory@0 {
+		device_type = "memory";
+		reg = <0x0 0x10000000>;
+	};
+
+	chosen {
+		bootargs = "";
+		stdout-path = "serial1:115200n8";
+	};
+};
+
+&clkc {
+	ps-clk-frequency = <100000000>;
+};
+
+&uart1 {
+	u-boot,dm-pre-reloc;
+	status = "okay";
+};
