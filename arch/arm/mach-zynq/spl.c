@@ -28,6 +28,7 @@ void board_init_f(ulong dummy)
 #ifdef CONFIG_SPL_BOARD_INIT
 void spl_board_init(void)
 {
+	puts(">>>:spl_board_init\n");
 	preloader_console_init();
 #if defined(CONFIG_ARCH_EARLY_INIT_R) && defined(CONFIG_SPL_FPGA_SUPPORT)
 	arch_early_init_r();

@@ -31,6 +31,8 @@ static int serial_check_stdout(const void *blob, struct udevice **devp)
 {
 	int node;
 
+	puts(">>>:serial_check_stdout\n");
+
 	/* Check for a chosen console */
 	node = fdtdec_get_chosen_node(blob, "stdout-path");
 	if (node < 0) {
@@ -54,8 +56,18 @@ static int serial_check_stdout(const void *blob, struct udevice **devp)
 	}
 	if (node < 0)
 		node = fdt_path_offset(blob, "console");
-	if (!uclass_get_device_by_of_offset(UCLASS_SERIAL, node, devp))
+
+	puts("right before\n");
+	for(;;);
+
+	if (!uclass_get_device_by_of_offset(UCLASS_SERIAL, node, devp)) {
+		puts("right after\n");
+		for(;;);
 		return 0;
+	}
+
+	puts("right after\n");
+	for(;;);
 
 	/*
 	 * If the console is not marked to be bound before relocation, bind it
@@ -77,6 +89,8 @@ static void serial_find_console_or_panic(void)
 #ifdef CONFIG_SERIAL_SEARCH_ALL
 	int ret;
 #endif
+
+	puts(">>>:serial_find_console_or_panic\n");
 
 	if (CONFIG_IS_ENABLED(OF_PLATDATA)) {
 		uclass_first_device(UCLASS_SERIAL, &dev);
@@ -156,6 +170,7 @@ static void serial_find_console_or_panic(void)
 /* Called prior to relocation */
 int serial_init(void)
 {
+	puts(">>>:serial_init() from serial-uclass.c\n");
 #if CONFIG_IS_ENABLED(SERIAL_PRESENT)
 	serial_find_console_or_panic();
 	gd->flags |= GD_FLG_SERIAL_READY;
