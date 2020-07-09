@@ -15,6 +15,7 @@ struct cmd_tbl;
 #define FS_TYPE_SANDBOX	3
 #define FS_TYPE_UBIFS	4
 #define FS_TYPE_BTRFS	5
+#define FS_TYPE_SQUASHFS 6
 
 struct blk_desc;
 
@@ -40,6 +41,18 @@ int do_fat_fsload(struct cmd_tbl *cmdtp, int flag, int argc,
  * @return result (see enum command_ret_t)
  */
 int do_ext2load(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[]);
+
+
+/**
+ * do_sqfs_load - Run the sqfsload command
+ *
+ * @cmdtp: Command information for sqfsload
+ * @flag: Command flags (CMD_FLAG_...)
+ * @argc: Number of arguments
+ * @argv: List of arguments
+ * @return result (see enum command_ret_t)
+ */
+int do_sqfs_load(cmd_tbl_t *cmdtp, int flag, int argc, char *const argv[]);
 
 /*
  * Tell the fs layer which block device an partition to use for future
