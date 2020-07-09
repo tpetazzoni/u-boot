@@ -30,3 +30,4 @@
 #include "inflate.c"
 #include "zutil.c"
 #include "adler32.c"
+#include "uncompr.c"
