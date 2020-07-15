@@ -1241,10 +1241,8 @@ int sqfs_read(const char *filename, void *buf, loff_t offset, loff_t len,
 	 */
 	sqfs_split_path(&file, &dir, filename);
 	ret = sqfs_opendir(dir, &dirs.fs_dirs);
-	if (ret) {
-		ret = CMD_RET_FAILURE;
+	if (ret)
 		goto free_paths;
-	}
 
 	dirsp = (struct fs_dir_stream *)&dirs;
 	dirs.dentp = &dent;
@@ -1253,7 +1251,6 @@ int sqfs_read(const char *filename, void *buf, loff_t offset, loff_t len,
 		if (!strncmp(dent.name, file, strlen(dent.name))) {
 			ret = sqfs_read_entry(&entry, dirs.entry);
 			if (ret) {
-				ret = CMD_RET_FAILURE;
 				free(dirs.entry);
 				sqfs_closedir(dirsp);
 				goto free_paths;
@@ -1269,7 +1266,7 @@ int sqfs_read(const char *filename, void *buf, loff_t offset, loff_t len,
 		printf("File not found.\n");
 		*actread = 0;
 		sqfs_closedir(dirsp);
-		ret = CMD_RET_FAILURE;
+		ret = -ENOENT;
 		goto free_paths;
 	}
 
@@ -1283,6 +1280,10 @@ int sqfs_read(const char *filename, void *buf, loff_t offset, loff_t len,
 		memcpy(&reg, ipos, sizeof(reg));
 		datablk_count = sqfs_get_regfile_info(&reg, &finfo, &frag_entry,
 						      sblk->block_size);
+		if (datablk_count < 0) {
+			ret = -EINVAL;
+			goto free_entry;
+		}
 		memcpy(finfo.blk_sizes, ipos + sizeof(reg),
 		       datablk_count * sizeof(u32));
 		break;
@@ -1291,6 +1292,10 @@ int sqfs_read(const char *filename, void *buf, loff_t offset, loff_t len,
 		datablk_count = sqfs_get_lregfile_info(&lreg, &finfo,
 						       &frag_entry,
 						       sblk->block_size);
+		if (datablk_count < 0) {
+			ret = -EINVAL;
+			goto free_entry;
+		}
 		memcpy(finfo.blk_sizes, ipos + sizeof(lreg),
 		       datablk_count * sizeof(u32));
 		break;
@@ -1301,9 +1306,6 @@ int sqfs_read(const char *filename, void *buf, loff_t offset, loff_t len,
 		printf("%s - > %s\n", filename, resolved);
 		ret = sqfs_read(resolved, buf, offset, len, actread);
 		free(resolved);
-		if (ret)
-			ret = CMD_RET_FAILURE;
-		ret = CMD_RET_SUCCESS;
 		goto free_entry;
 	case SQFS_BLKDEV_TYPE:
 	case SQFS_CHRDEV_TYPE:
@@ -1315,19 +1317,14 @@ int sqfs_read(const char *filename, void *buf, loff_t offset, loff_t len,
 	case SQFS_LSOCKET_TYPE:
 	default:
 		printf("Unsupported entry type\n");
-		ret = CMD_RET_FAILURE;
-		goto free_entry;
-	}
-
-	if (datablk_count < 0) {
-		ret = CMD_RET_FAILURE;
+		ret = -EINVAL;
 		goto free_entry;
 	}
 
 	/* If the user specifies a length, check its sanity */
 	if (len) {
 		if (len > finfo.size) {
-			ret = CMD_RET_FAILURE;
+			ret = -EINVAL;
 			goto free_entry;
 		}
 
@@ -1338,7 +1335,7 @@ int sqfs_read(const char *filename, void *buf, loff_t offset, loff_t len,
 		data_offset = finfo.start;
 		datablock = malloc(sblk->block_size);
 		if (!datablock) {
-			ret = CMD_RET_FAILURE;
+			ret = -ENOMEM;
 			goto free_entry;
 		}
 	}
@@ -1353,18 +1350,18 @@ int sqfs_read(const char *filename, void *buf, loff_t offset, loff_t len,
 		data_buffer = malloc_cache_aligned(n_blks * cur_dev->blksz);
 
 		if (!data_buffer) {
-			ret = CMD_RET_FAILURE;
+			ret = -ENOMEM;
 			goto free_datablk;
 		}
 
-		if (sqfs_disk_read(start, n_blks, data_buffer) < 0) {
+		ret = sqfs_disk_read(start, n_blks, data_buffer);
+		if (ret < 0) {
 			/*
 			 * Tip: re-compile the SquashFS image with mksquashfs's
 			 * -b <block_size> option.
 			 */
 			printf("Error: too many data blocks or too large"\
 			       "SquashFS block size.\n");
-			ret = CMD_RET_FAILURE;
 			goto free_buffer;
 		}
 
@@ -1375,10 +1372,8 @@ int sqfs_read(const char *filename, void *buf, loff_t offset, loff_t len,
 			dest_len = sblk->block_size;
 			ret = sqfs_decompress(comp_type, datablock, &dest_len,
 					      data, table_size);
-			if (ret) {
-				ret = CMD_RET_FAILURE;
+			if (ret)
 				goto free_buffer;
-			}
 
 			memcpy(buf + offset + *actread, datablock, dest_len);
 			*actread += dest_len;
@@ -1396,7 +1391,7 @@ int sqfs_read(const char *filename, void *buf, loff_t offset, loff_t len,
 	 * There is no need to continue if the file is not fragmented.
 	 */
 	if (!finfo.frag) {
-		ret = CMD_RET_SUCCESS;
+		ret = 0;
 		goto free_buffer;
 	}
 
@@ -1408,21 +1403,20 @@ int sqfs_read(const char *filename, void *buf, loff_t offset, loff_t len,
 	fragment = malloc_cache_aligned(n_blks * cur_dev->blksz);
 
 	if (!fragment) {
-		ret = CMD_RET_FAILURE;
+		ret = -ENOMEM;
 		goto free_buffer;
 	}
 
-	if (sqfs_disk_read(start, n_blks, fragment) < 0) {
-		ret = CMD_RET_FAILURE;
+	ret = sqfs_disk_read(start, n_blks, fragment);
+	if (ret < 0)
 		goto free_fragment;
-	}
 
 	/* File compressed and fragmented */
 	if (finfo.frag && finfo.comp) {
 		dest_len = sblk->block_size;
 		fragment_block = malloc(sblk->block_size);
 		if (!fragment_block) {
-			ret = CMD_RET_FAILURE;
+			ret = -ENOMEM;
 			goto free_fragment;
 		}
 
@@ -1431,7 +1425,6 @@ int sqfs_read(const char *filename, void *buf, loff_t offset, loff_t len,
 				      frag_entry.size);
 		if (ret) {
 			free(fragment_block);
-			ret = CMD_RET_FAILURE;
 			goto free_fragment;
 		}
 
@@ -1480,7 +1473,7 @@ int sqfs_ls(const char *filename)
 	ret = sqfs_opendir(filename, &dirs.fs_dirs);
 	if (ret) {
 		sqfs_closedir(dirsp);
-		return CMD_RET_FAILURE;
+		return ret;
 	}
 
 	dirs.dentp = &dent;
@@ -1542,7 +1535,6 @@ int sqfs_size(const char *filename, loff_t *size)
 	ret = sqfs_opendir(dir, &dirs.fs_dirs);
 	if (ret) {
 		sqfs_closedir(dirsp);
-		ret = CMD_RET_FAILURE;
 		goto free_strings;
 	}
 
@@ -1558,7 +1550,6 @@ int sqfs_size(const char *filename, loff_t *size)
 
 	if (ret) {
 		sqfs_closedir(dirsp);
-		ret = CMD_RET_FAILURE;
 		goto free_strings;
 	}
 
@@ -1583,9 +1574,6 @@ int sqfs_size(const char *filename, loff_t *size)
 		resolved = sqfs_resolve_symlink(&symlink, ipos, filename);
 		ret = sqfs_size(resolved, size);
 		free(resolved);
-		if (ret)
-			ret = CMD_RET_FAILURE;
-		ret = CMD_RET_SUCCESS;
 		break;
 	case SQFS_BLKDEV_TYPE:
 	case SQFS_CHRDEV_TYPE:
@@ -1598,6 +1586,7 @@ int sqfs_size(const char *filename, loff_t *size)
 	default:
 		printf("Unable to recover entry's size.\n");
 		*size = 0;
+		ret = -EINVAL;
 		break;
 	}
 
@@ -1608,7 +1597,7 @@ free_strings:
 	free(sblk);
 	sqfs_closedir(dirsp);
 
-	return 0;
+	return ret;
 }
 
 void sqfs_close(void)
