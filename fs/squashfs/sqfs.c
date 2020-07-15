@@ -23,17 +23,22 @@
 #include "sqfs_filesystem.h"
 #include "sqfs_utils.h"
 
-static struct disk_partition cur_part_info;
-static struct blk_desc *cur_dev;
+struct squashfs_ctxt {
+	struct disk_partition cur_part_info;
+	struct blk_desc *cur_dev;
+	struct squashfs_super_block *sblk;
+};
+
+static struct squashfs_ctxt ctxt;
 
 static int sqfs_disk_read(__u32 block, __u32 nr_blocks, void *buf)
 {
 	ulong ret;
 
-	if (!cur_dev)
+	if (!ctxt.cur_dev)
 		return -1;
 
-	ret = blk_dread(cur_dev, cur_part_info.start + block, nr_blocks, buf);
+	ret = blk_dread(ctxt.cur_dev, ctxt.cur_part_info.start + block, nr_blocks, buf);
 	if (ret != nr_blocks)
 		return -1;
 
@@ -42,13 +47,12 @@ static int sqfs_disk_read(__u32 block, __u32 nr_blocks, void *buf)
 
 static int sqfs_read_sblk(struct squashfs_super_block **sblk)
 {
-	*sblk = malloc_cache_aligned(cur_dev->blksz);
+	*sblk = malloc_cache_aligned(ctxt.cur_dev->blksz);
 	if (!*sblk)
 		return -ENOMEM;
 
 	if (sqfs_disk_read(0, 1, *sblk) != 1) {
 		free(*sblk);
-		cur_dev = NULL;
 		return -EINVAL;
 	}
 
@@ -96,10 +100,10 @@ static int sqfs_calc_n_blks(__le64 start, __le64 end, u64 *offset)
 	u64 start_, table_size;
 
 	table_size = le64_to_cpu(end) - le64_to_cpu(start);
-	start_ = le64_to_cpu(start) / cur_dev->blksz;
-	*offset = le64_to_cpu(start) - (start_ * cur_dev->blksz);
+	start_ = le64_to_cpu(start) / ctxt.cur_dev->blksz;
+	*offset = le64_to_cpu(start) - (start_ * ctxt.cur_dev->blksz);
 
-	return DIV_ROUND_UP(table_size + *offset, cur_dev->blksz);
+	return DIV_ROUND_UP(table_size + *offset, ctxt.cur_dev->blksz);
 }
 
 /*
@@ -112,35 +116,26 @@ static int sqfs_frag_lookup(u32 inode_fragment_index,
 	u64 start, n_blks, src_len, table_offset, start_block;
 	unsigned char *metadata_buffer, *metadata, *table;
 	struct squashfs_fragment_block_entry *entries;
-	struct squashfs_super_block *sblk;
+	struct squashfs_super_block *sblk = ctxt.sblk;
 	unsigned long dest_len;
 	int block, offset, ret;
 	u16 header, comp_type;
 
-	ret = sqfs_read_sblk(&sblk);
-	if (ret)
-		return ret;
+	comp_type = le16_to_cpu(ctxt.sblk->compression);
 
-	comp_type = le16_to_cpu(sblk->compression);
+	if (inode_fragment_index >= le32_to_cpu(sblk->fragments))
+		return -EINVAL;
 
-	if (inode_fragment_index >= le32_to_cpu(sblk->fragments)) {
-		ret = -EINVAL;
-		goto free_sblk;
-	}
-
-	start = le64_to_cpu(sblk->fragment_table_start) / cur_dev->blksz;
+	start = le64_to_cpu(sblk->fragment_table_start) / ctxt.cur_dev->blksz;
 	n_blks = sqfs_calc_n_blks(sblk->fragment_table_start,
 				  sblk->export_table_start, &table_offset);
 
 	/* Allocate a proper sized buffer to store the fragment index table */
-	table = malloc_cache_aligned(n_blks * cur_dev->blksz);
-	if (!table) {
-		ret = -ENOMEM;
-		goto free_sblk;
-	}
+	table = malloc_cache_aligned(n_blks * ctxt.cur_dev->blksz);
+	if (!table)
+		return -ENOMEM;
 
 	if (sqfs_disk_read(start, n_blks, table) < 0) {
-		free(sblk);
 		free(table);
 		return -EINVAL;
 	}
@@ -154,11 +149,11 @@ static int sqfs_frag_lookup(u32 inode_fragment_index,
 	 */
 	start_block = get_unaligned((u64 *)&table[table_offset] + block);
 
-	start = start_block / cur_dev->blksz;
+	start = start_block / ctxt.cur_dev->blksz;
 	n_blks = sqfs_calc_n_blks(cpu_to_le64(start_block),
 				  sblk->fragment_table_start, &table_offset);
 
-	metadata_buffer = malloc_cache_aligned(n_blks * cur_dev->blksz);
+	metadata_buffer = malloc_cache_aligned(n_blks * ctxt.cur_dev->blksz);
 	if (!metadata_buffer) {
 		ret = -ENOMEM;
 		goto free_table;
@@ -201,8 +196,6 @@ free_buffer:
 	free(metadata_buffer);
 free_table:
 	free(table);
-free_sblk:
-	free(sblk);
 	return ret;
 }
 
@@ -416,19 +409,14 @@ static int sqfs_search_dir(struct squashfs_dir_stream *dirs, char **token_list,
 			   int token_count, u32 *m_list, int m_count)
 {
 	int j, ret, new_inode_number, offset;
+	struct squashfs_super_block *sblk = ctxt.sblk;
 	struct squashfs_symlink_inode sym;
-	struct squashfs_super_block *sblk;
 	struct squashfs_ldir_inode ldir;
 	struct squashfs_dir_inode dir;
 	struct fs_dir_stream *dirsp;
 	char  *path, *filename;
 	struct fs_dirent dent;
 	unsigned char *table;
-
-	/* Read SquashFS super block */
-	ret = sqfs_read_sblk(&sblk);
-	if (ret)
-		return ret;
 
 	dirsp = (struct fs_dir_stream *)dirs;
 	dirs->dentp = &dent;
@@ -446,10 +434,8 @@ static int sqfs_search_dir(struct squashfs_dir_stream *dirs, char **token_list,
 
 	/* Setup directory header */
 	dirs->dir_header = malloc(SQFS_DIR_HEADER_SIZE);
-	if (!dirs->dir_header) {
-		free(sblk);
+	if (!dirs->dir_header)
 		return -ENOMEM;
-	}
 
 	memcpy(dirs->dir_header, dirs->table, SQFS_DIR_HEADER_SIZE);
 	dirs->table += SQFS_DIR_HEADER_SIZE;
@@ -462,14 +448,12 @@ static int sqfs_search_dir(struct squashfs_dir_stream *dirs, char **token_list,
 	if (!strcmp(token_list[0], "/")) {
 		dirs->table = &dirs->dir_table[offset];
 		memcpy(&dirs->i_dir, &dir, sizeof(dir));
-		free(sblk);
 		return 0;
 	}
 
 	for (j = 0; j < token_count; j++) {
 		if (!sqfs_is_dir(dir.inode_type)) {
 			printf("Directory not found: %s\n", token_list[j]);
-			free(sblk);
 			return -EINVAL;
 		}
 
@@ -483,7 +467,6 @@ static int sqfs_search_dir(struct squashfs_dir_stream *dirs, char **token_list,
 		if (ret) {
 			printf("Directory not found: %s\n", token_list[j]);
 			free(dirs->entry);
-			free(sblk);
 			return -EINVAL;
 		}
 
@@ -503,12 +486,10 @@ static int sqfs_search_dir(struct squashfs_dir_stream *dirs, char **token_list,
 			filename = sqfs_resolve_symlink(&sym, table, path);
 			printf("%s - > %s\n", token_list[j], filename);
 			free(dirs->entry);
-			free(sblk);
 			return SQFS_SYMLINK_TYPE;
 		} else if (!sqfs_is_dir(dir.inode_type)) {
 			printf("%s is not a directory.\n", token_list[j]);
 			free(dirs->entry);
-			free(sblk);
 			return -EINVAL;
 		}
 
@@ -528,7 +509,6 @@ static int sqfs_search_dir(struct squashfs_dir_stream *dirs, char **token_list,
 		if (sqfs_is_empty_dir(table)) {
 			printf("Empty directory.\n");
 			free(dirs->entry);
-			free(sblk);
 			return SQFS_EMPTY_DIR;
 		}
 
@@ -546,8 +526,6 @@ static int sqfs_search_dir(struct squashfs_dir_stream *dirs, char **token_list,
 		memcpy(&dirs->i_dir, &dir, sizeof(dir));
 	else
 		memcpy(&dirs->i_ldir, &ldir, sizeof(ldir));
-
-	free(sblk);
 
 	return 0;
 }
@@ -608,30 +586,23 @@ static int sqfs_read_inode_table(unsigned char **inode_table)
 {
 	u64 start, n_blks, table_offset, table_size;
 	int j, ret = 0, metablks_count, comp_type;
-	struct squashfs_super_block *sblk;
+	struct squashfs_super_block *sblk = ctxt.sblk;
 	unsigned char *src_table, *itb;
 	u32 src_len, dest_offset = 0;
 	unsigned long dest_len;
 	bool compressed;
 
-	/* Read SquashFS super block */
-	ret = sqfs_read_sblk(&sblk);
-	if (ret)
-		return ret;
-
 	comp_type = sblk->compression;
 	table_size = le64_to_cpu(sblk->directory_table_start -
 				 sblk->inode_table_start);
-	start = sblk->inode_table_start / cur_dev->blksz;
+	start = sblk->inode_table_start / ctxt.cur_dev->blksz;
 	n_blks = sqfs_calc_n_blks(sblk->inode_table_start,
 				  sblk->directory_table_start, &table_offset);
 
 	/* Allocate a proper sized buffer (itb) to store the inode table */
-	itb = malloc_cache_aligned(n_blks * cur_dev->blksz);
-	if (!itb) {
-		ret = -ENOMEM;
-		goto free_sblk;
-	}
+	itb = malloc_cache_aligned(n_blks * ctxt.cur_dev->blksz);
+	if (!itb)
+		return -ENOMEM;
 
 	if (sqfs_disk_read(start, n_blks, itb) < 0) {
 		ret = -EINVAL;
@@ -689,8 +660,6 @@ static int sqfs_read_inode_table(unsigned char **inode_table)
 
 free_itb:
 	free(itb);
-free_sblk:
-	free(sblk);
 
 	return ret;
 }
@@ -699,31 +668,25 @@ static int sqfs_read_directory_table(unsigned char **dir_table, u32 **pos_list)
 {
 	u64 start, n_blks, table_offset, table_size;
 	int j, ret = 0, metablks_count = -1, comp_type;
-	struct squashfs_super_block *sblk;
+	struct squashfs_super_block *sblk = ctxt.sblk;
 	unsigned char *src_table, *dtb;
 	u32 src_len, dest_offset = 0;
 	unsigned long dest_len;
 	bool compressed;
-
-	/* Read SquashFS super block */
-	ret = sqfs_read_sblk(&sblk);
-	if (ret)
-		return ret;
 
 	comp_type = sblk->compression;
 
 	/* DIRECTORY TABLE */
 	table_size = le64_to_cpu(sblk->fragment_table_start -
 				 sblk->directory_table_start);
-	start = sblk->directory_table_start / cur_dev->blksz;
+	start = sblk->directory_table_start / ctxt.cur_dev->blksz;
 	n_blks = sqfs_calc_n_blks(sblk->directory_table_start,
 				  sblk->fragment_table_start, &table_offset);
 
 	/* Allocate a proper sized buffer (dtb) to store the directory table */
-	dtb = malloc_cache_aligned(n_blks * cur_dev->blksz);
-
+	dtb = malloc_cache_aligned(n_blks * ctxt.cur_dev->blksz);
 	if (!dtb)
-		goto free_sblk;
+		return -ENOMEM;
 
 	if (sqfs_disk_read(start, n_blks, dtb) < 0)
 		goto free_dtb;
@@ -794,8 +757,6 @@ static int sqfs_read_directory_table(unsigned char **dir_table, u32 **pos_list)
 
 free_dtb:
 	free(dtb);
-free_sblk:
-	free(sblk);
 
 	return metablks_count;
 }
@@ -804,40 +765,26 @@ int sqfs_opendir(const char *filename, struct fs_dir_stream **dirsp)
 {
 	unsigned char *inode_table = NULL, *dir_table = NULL;
 	int i, j, token_count, ret = 0, metablks_count;
-	struct squashfs_super_block *sblk;
 	struct squashfs_dir_stream *dirs;
 	char **token_list, *path, *aux;
 	u32 *pos_list = NULL;
 
-	/* Read SquashFS super block */
-	ret = sqfs_read_sblk(&sblk);
+	ret = sqfs_read_inode_table(&inode_table);
 	if (ret)
 		return -EINVAL;
 
-	ret = sqfs_read_inode_table(&inode_table);
-	if (ret) {
-		ret = -EINVAL;
-		goto free_sblk;
-	}
-
 	metablks_count = sqfs_read_directory_table(&dir_table, &pos_list);
-	if (metablks_count < 1) {
-		ret = -EINVAL;
-		goto free_sblk;
-	}
+	if (metablks_count < 1)
+		return -EINVAL;
 
 	/* Tokenize filename */
 	token_count = sqfs_tokenize_path(filename);
-	if (token_count < 0) {
-		ret = -EINVAL;
-		goto free_sblk;
-	}
+	if (token_count < 0)
+		return -EINVAL;
 
 	path = strdup(filename);
-	if (!path) {
-		ret = -ENOMEM;
-		goto free_sblk;
-	}
+	if (!path)
+		return -ENOMEM;
 
 	token_list = malloc(token_count * sizeof(char *));
 	if (!token_list) {
@@ -902,8 +849,6 @@ free_list:
 	free(pos_list);
 free_path:
 	free(path);
-free_sblk:
-	free(sblk);
 
 	return ret;
 }
@@ -1019,8 +964,8 @@ int sqfs_probe(struct blk_desc *fs_dev_desc, struct disk_partition *fs_partition
 	struct squashfs_super_block *sblk;
 	int ret;
 
-	cur_dev = fs_dev_desc;
-	cur_part_info = *fs_partition;
+	ctxt.cur_dev = fs_dev_desc;
+	ctxt.cur_part_info = *fs_partition;
 
 	ret = sqfs_read_sblk(&sblk);
 	if (ret)
@@ -1029,11 +974,11 @@ int sqfs_probe(struct blk_desc *fs_dev_desc, struct disk_partition *fs_partition
 	/* Make sure it has a valid SquashFS magic number*/
 	if (sblk->s_magic != SQFS_MAGIC_NUMBER) {
 		printf("Bad magic number for SquashFS image.\n");
-		cur_dev = NULL;
+		ctxt.cur_dev = NULL;
 		return -EINVAL;
 	}
 
-	free(sblk);
+	ctxt.sblk = sblk;
 
 	return 0;
 }
@@ -1206,12 +1151,12 @@ int sqfs_read(const char *filename, void *buf, loff_t offset, loff_t len,
 	char *fragment, *file, *resolved, *data;
 	u64 start, n_blks, table_size, data_offset, table_offset;
 	int ret, j, i_number, comp_type, datablk_count = 0;
+	struct squashfs_super_block *sblk = ctxt.sblk;
 	struct squashfs_fragment_block_entry frag_entry;
 	struct squashfs_directory_entry *entry = NULL;
 	struct squashfs_file_info finfo = {0};
 	struct squashfs_symlink_inode symlink;
 	struct fs_dir_stream *dirsp = NULL;
-	struct squashfs_super_block *sblk;
 	struct squashfs_dir_stream dirs;
 	struct squashfs_lreg_inode lreg;
 	struct squashfs_base_inode base;
@@ -1221,11 +1166,6 @@ int sqfs_read(const char *filename, void *buf, loff_t offset, loff_t len,
 	unsigned char *ipos;
 
 	*actread = 0;
-
-	/* Read SquashFS super block */
-	ret = sqfs_read_sblk(&sblk);
-	if (ret)
-		return ret;
 
 	comp_type = le16_to_cpu(sblk->compression);
 
@@ -1335,13 +1275,13 @@ int sqfs_read(const char *filename, void *buf, loff_t offset, loff_t len,
 	}
 
 	for (j = 0; j < datablk_count; j++) {
-		start = data_offset / cur_dev->blksz;
+		start = data_offset / ctxt.cur_dev->blksz;
 		table_size = SQFS_BLOCK_SIZE(finfo.blk_sizes[j]);
-		table_offset = data_offset - (start * cur_dev->blksz);
+		table_offset = data_offset - (start * ctxt.cur_dev->blksz);
 		n_blks = DIV_ROUND_UP(table_size + table_offset,
-				      cur_dev->blksz);
+				      ctxt.cur_dev->blksz);
 
-		data_buffer = malloc_cache_aligned(n_blks * cur_dev->blksz);
+		data_buffer = malloc_cache_aligned(n_blks * ctxt.cur_dev->blksz);
 
 		if (!data_buffer) {
 			ret = -ENOMEM;
@@ -1389,12 +1329,12 @@ int sqfs_read(const char *filename, void *buf, loff_t offset, loff_t len,
 		goto free_buffer;
 	}
 
-	start = frag_entry.start / cur_dev->blksz;
+	start = frag_entry.start / ctxt.cur_dev->blksz;
 	table_size = SQFS_BLOCK_SIZE(frag_entry.size);
-	table_offset = frag_entry.start - (start * cur_dev->blksz);
-	n_blks = DIV_ROUND_UP(table_size + table_offset, cur_dev->blksz);
+	table_offset = frag_entry.start - (start * ctxt.cur_dev->blksz);
+	n_blks = DIV_ROUND_UP(table_size + table_offset, ctxt.cur_dev->blksz);
 
-	fragment = malloc_cache_aligned(n_blks * cur_dev->blksz);
+	fragment = malloc_cache_aligned(n_blks * ctxt.cur_dev->blksz);
 
 	if (!fragment) {
 		ret = -ENOMEM;
@@ -1504,9 +1444,9 @@ int sqfs_ls(const char *filename)
 
 int sqfs_size(const char *filename, loff_t *size)
 {
+	struct squashfs_super_block *sblk = ctxt.sblk;
 	struct squashfs_symlink_inode symlink;
 	struct fs_dir_stream *dirsp = NULL;
-	struct squashfs_super_block *sblk;
 	struct squashfs_base_inode base;
 	struct squashfs_dir_stream dirs;
 	struct squashfs_lreg_inode lreg;
@@ -1515,11 +1455,6 @@ int sqfs_size(const char *filename, loff_t *size)
 	struct fs_dirent dent;
 	unsigned char *ipos;
 	int ret, i_number;
-
-	/* Read SquashFS super block */
-	ret = sqfs_read_sblk(&sblk);
-	if (ret)
-		return ret;
 
 	sqfs_split_path(&file, &dir, filename);
 	/*
@@ -1596,6 +1531,8 @@ free_strings:
 
 void sqfs_close(void)
 {
+	free(ctxt.sblk);
+	ctxt.cur_dev = NULL;
 }
 
 void sqfs_closedir(struct fs_dir_stream *dirs)
