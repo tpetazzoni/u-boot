@@ -42,18 +42,6 @@ int do_fat_fsload(struct cmd_tbl *cmdtp, int flag, int argc,
  */
 int do_ext2load(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[]);
 
-
-/**
- * do_sqfs_load - Run the sqfsload command
- *
- * @cmdtp: Command information for sqfsload
- * @flag: Command flags (CMD_FLAG_...)
- * @argc: Number of arguments
- * @argv: List of arguments
- * @return result (see enum command_ret_t)
- */
-int do_sqfs_load(cmd_tbl_t *cmdtp, int flag, int argc, char *const argv[]);
-
 /*
  * Tell the fs layer which block device an partition to use for future
  * commands. This also internally identifies the filesystem that is present

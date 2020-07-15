@@ -7,10 +7,11 @@
  * squashfs.c:	implements SquashFS related commands
  */
 
+#include <command.h>
 #include <fs.h>
 #include <squashfs.h>
 
-int do_sqfs_ls(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[])
+static int do_sqfs_ls(struct cmd_tbl *cmdtp, int flag, int argc, char * const argv[])
 {
 	return do_ls(cmdtp, flag, argc, argv, FS_TYPE_SQUASHFS);
 }
@@ -22,7 +23,7 @@ U_BOOT_CMD(
 	"    - list files from 'dev' on 'interface' in 'directory'\n"
 );
 
-int do_sqfs_load(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[])
+static int do_sqfs_load(struct cmd_tbl *cmdtp, int flag, int argc, char * const argv[])
 {
 	return do_load(cmdtp, flag, argc, argv, FS_TYPE_SQUASHFS);
 }
