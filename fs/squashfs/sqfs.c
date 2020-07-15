@@ -1017,20 +1017,14 @@ int sqfs_readdir(struct fs_dir_stream *fs_dirs, struct fs_dirent **dentp)
 int sqfs_probe(struct blk_desc *fs_dev_desc, struct disk_partition *fs_partition)
 {
 	struct squashfs_super_block *sblk;
+	int ret;
 
 	cur_dev = fs_dev_desc;
 	cur_part_info = *fs_partition;
-	sblk = malloc_cache_aligned(cur_dev->blksz);
 
-	if (!sblk)
-		return -ENOMEM;
-
-	/* Read SquashFS super block */
-	if (sqfs_disk_read(0, 1, sblk) != 1) {
-		free(sblk);
-		cur_dev = NULL;
-		return -EINVAL;
-	}
+	ret = sqfs_read_sblk(&sblk);
+	if (ret)
+		return ret;
 
 	/* Make sure it has a valid SquashFS magic number*/
 	if (sblk->s_magic != SQFS_MAGIC_NUMBER) {
