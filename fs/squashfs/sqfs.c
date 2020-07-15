@@ -17,12 +17,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <squashfs.h>
+#include <part.h>
 
 #include "sqfs_decompressor.h"
 #include "sqfs_filesystem.h"
 #include "sqfs_utils.h"
 
-static disk_partition_t cur_part_info;
+static struct disk_partition cur_part_info;
 static struct blk_desc *cur_dev;
 
 static int sqfs_disk_read(__u32 block, __u32 nr_blocks, void *buf)
@@ -1013,7 +1014,7 @@ int sqfs_readdir(struct fs_dir_stream *fs_dirs, struct fs_dirent **dentp)
 	return SQFS_CONTINUE_READDIR;
 }
 
-int sqfs_probe(struct blk_desc *fs_dev_desc, disk_partition_t *fs_partition)
+int sqfs_probe(struct blk_desc *fs_dev_desc, struct disk_partition *fs_partition)
 {
 	struct squashfs_super_block *sblk;
 
